@@ -433,7 +433,20 @@ export default async function handler(req, res) {
   const results = new Array(count).fill(null);
   const tasks = Array.from({ length: count }, () => () => createOne(opts));
   const deadline = count === 1 ? 4400 : count <= 5 ? 8600 : 55000;
-  await Promise.race([runPool(tasks, concurrency, results), new Promise((r) => setTimeout(r, deadline))]);
+  const soft = new Promise((resolve) => {
+    if (count <= 1) return;
+    const poll = setInterval(() => {
+      if (results.some(Boolean)) {
+        clearInterval(poll);
+        setTimeout(resolve, 400);
+      }
+    }, 50);
+    setTimeout(() => {
+      clearInterval(poll);
+      resolve();
+    }, deadline);
+  });
+  await Promise.race([runPool(tasks, concurrency, results), soft, new Promise((r) => setTimeout(r, deadline))]);
   const accounts = results.filter(Boolean);
   return res.status(200).json({
     success: true,
