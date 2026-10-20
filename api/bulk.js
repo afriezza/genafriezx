@@ -1,18 +1,38 @@
-// api/bulk.js - 100x paralel dispatcher, ganti 1 API lemot jadi 100 tembakan
-export default async function handler(req,res){
-  res.setHeader("Access-Control-Allow-Origin","*");
-  const q=req.query||{};
-  const name=(q.name||"Sam").slice(0,20);
-  const total=Math.min(parseInt(q.count||"100")||100,100);
-  const region=(q.region||"ID").toUpperCase();
-  const per=10, workers=Math.ceil(total/per);
-  const base=`https://${req.headers.host}`;
-  const jobs=[];
-  for(let i=0;i<workers;i++){
-    const url=`${base}/api/gen?name=${encodeURIComponent(name)}&count=${per}&region=${region}&detect_rare=true`;
-    jobs.push(fetch(url).then(r=>r.json()).catch(()=>({accounts:[]})));
+export default async function handler(req, res) {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "*");
+  res.setHeader("Cache-Control", "no-store");
+  if (req.method === "OPTIONS") return res.status(204).end();
+  const q = req.query || {};
+  const count = Math.min(Math.max(parseInt(q.count, 10) || 100, 1), 500);
+  const chunk = Math.min(Math.max(parseInt(q.chunk, 10) || 20, 1), 50);
+  const host = req.headers.host || "genafriezx.vercel.app";
+  const params = new URLSearchParams();
+  for (const k of ["region", "name", "password_prefix", "ghost", "detect_rare", "bind"]) {
+    if (q[k] !== undefined) params.set(k, q[k]);
   }
-  const all=await Promise.all(jobs);
-  const accounts=all.flatMap(x=>x.accounts||[]).slice(0,total);
-  res.status(200).json({success:true,total_requested:total,total_created:accounts.length,rare_count:accounts.filter(a=>a.rare?.length).length,accounts});
+  const slices = [];
+  for (let left = count; left > 0; left -= chunk) slices.push(Math.min(chunk, left));
+  const started = Date.now();
+  const results = await Promise.all(slices.map(async (c) => {
+    const p = new URLSearchParams(params);
+    p.set("count", String(c));
+    try {
+      const r = await fetch(`https://${host}/api/gen?${p.toString()}`);
+      return await r.json();
+    } catch {
+      return null;
+    }
+  }));
+  const accounts = results.filter(Boolean).flatMap((r) => r.accounts || []);
+  return res.status(200).json({
+    success: true,
+    engine: "live",
+    total_requested: count,
+    total_created: accounts.length,
+    rare_count: accounts.filter((a) => a.rare && a.rare.length).length,
+    ms_total: Date.now() - started,
+    accounts,
+  });
 }
