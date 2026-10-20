@@ -171,6 +171,8 @@ let registerSlots = 8;
 let registerBusy = 0;
 let registerOkStreak = 0;
 let registerNextAt = 0;
+let register429Streak = 0;
+let drainedUntil = 0;
 const registerWaiters = [];
 
 async function acquireRegister() {
@@ -191,10 +193,13 @@ async function acquireRegister() {
 function releaseRegister(status) {
   if (status === 429) {
     registerOkStreak = 0;
+    register429Streak++;
+    if (register429Streak >= 3) drainedUntil = Date.now() + 20000;
     registerSlots = Math.max(4, Math.floor(registerSlots / 2));
     registerNextAt = Date.now() + 400 + Math.random() * 400;
   } else if (status === 200) {
     registerOkStreak++;
+    register429Streak = 0;
     if (registerOkStreak >= 4 && registerSlots < REGISTER_MAX) {
       registerOkStreak = 0;
       registerSlots++;
@@ -352,6 +357,7 @@ export async function createOne(opts = {}) {
   let uid = "";
   let g = null;
   for (let i = 0; i < delays.length && !g; i++) {
+    if (Date.now() < drainedUntil) break;
     if (delays[i]) await new Promise((r) => setTimeout(r, delays[i] + Math.random() * 300));
     uid = await guestRegister(password);
     if (!uid) continue;
@@ -406,6 +412,9 @@ export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Headers", "*");
   res.setHeader("Cache-Control", "no-store");
   if (req.method === "OPTIONS") return res.status(204).end();
+  if (Date.now() < drainedUntil) {
+    return res.status(200).json({ success: true, accounts: [], drained: true, ms_total: 0 });
+  }
   const q = req.query || {};
   const count = Math.min(Math.max(parseInt(q.count, 10) || 1, 1), 50);
   const concurrency = Math.min(Math.max(parseInt(q.concurrency, 10) || 50, 1), 50);
