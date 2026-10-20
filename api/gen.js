@@ -107,7 +107,7 @@ function xorField(openId) {
   return out;
 }
 
-function post(url, headers, body, ms = 8000) {
+function postOnce(url, headers, body, ms) {
   const ip = nextIp();
   return new Promise((resolve) => {
     const u = new URL(url);
@@ -149,6 +149,12 @@ function post(url, headers, body, ms = 8000) {
   });
 }
 
+async function post(url, headers, body, ms = 8000) {
+  const r = await postOnce(url, headers, body, ms);
+  if (r.status !== 0) return r;
+  return postOnce(url, headers, body, ms);
+}
+
 function makeDevice() {
   const d = rnd(DEVICES);
   return {
@@ -160,21 +166,47 @@ function makeDevice() {
   };
 }
 
+const REGISTER_SLOTS = 5;
+const REGISTER_GAP = 250;
+let registerBusy = 0;
+let registerNextAt = 0;
+const registerWaiters = [];
+
+async function acquireRegister() {
+  if (registerBusy < REGISTER_SLOTS) registerBusy++;
+  else await new Promise((resolve) => registerWaiters.push(resolve));
+  const now = Date.now();
+  const wait = Math.max(0, registerNextAt - now);
+  registerNextAt = Math.max(now, registerNextAt) + REGISTER_GAP;
+  if (wait) await new Promise((r) => setTimeout(r, wait));
+}
+
+function releaseRegister() {
+  const next = registerWaiters.shift();
+  if (next) next();
+  else registerBusy--;
+}
+
 async function guestRegister(password) {
   const body = JSON.stringify({ app_id: 100067, client_type: 2, password, source: 2 });
   const sig = crypto.createHmac("sha256", HEX_KEY).update(body).digest("hex");
-  const r = await post(REGISTER_URL, {
-    "User-Agent": pickUA(),
-    Accept: "application/json",
-    Authorization: "Signature " + sig,
-    "Content-Type": "application/json; charset=utf-8",
-  }, body);
-  if (r.status !== 200) return null;
+  await acquireRegister();
   try {
-    const j = JSON.parse(r.buf.toString("utf8"));
-    return j.code === 0 && j.data && j.data.uid ? j.data.uid : null;
-  } catch {
-    return null;
+    const r = await post(REGISTER_URL, {
+      "User-Agent": pickUA(),
+      Accept: "application/json",
+      Authorization: "Signature " + sig,
+      "Content-Type": "application/json; charset=utf-8",
+    }, body);
+    if (r.status !== 200) return null;
+    try {
+      const j = JSON.parse(r.buf.toString("utf8"));
+      return j.code === 0 && j.data && j.data.uid ? j.data.uid : null;
+    } catch {
+      return null;
+    }
+  } finally {
+    releaseRegister();
   }
 }
 
@@ -291,11 +323,11 @@ export async function createOne(opts = {}) {
   const detect = opts.detect_rare !== false;
   const started = Date.now();
   const password = pwPrefix + crypto.randomBytes(16).toString("hex");
-  const delays = [0, 400, 900, 1600, 2600];
+  const delays = [0, 300, 700, 1400, 2200];
   let uid = "";
   let g = null;
   for (let i = 0; i < delays.length && !g; i++) {
-    if (delays[i]) await new Promise((r) => setTimeout(r, delays[i] + Math.random() * 400));
+    if (delays[i]) await new Promise((r) => setTimeout(r, delays[i] + Math.random() * 300));
     uid = await guestRegister(password);
     if (!uid) continue;
     g = await tokenGrant(uid, password);
@@ -326,8 +358,7 @@ export async function createOne(opts = {}) {
   };
 }
 
-async function runPool(tasks, limit) {
-  const out = new Array(tasks.length).fill(null);
+async function runPool(tasks, limit, out = new Array(tasks.length).fill(null)) {
   let i = 0;
   const workers = Array.from({ length: Math.max(1, Math.min(limit, tasks.length)) }, async () => {
     for (;;) {
@@ -362,8 +393,10 @@ export default async function handler(req, res) {
     detect_rare: String(q.detect_rare).toLowerCase() !== "false",
   };
   const started = Date.now();
+  const results = new Array(count).fill(null);
   const tasks = Array.from({ length: count }, () => () => createOne(opts));
-  const results = await runPool(tasks, concurrency);
+  const deadline = count === 1 ? 4400 : count <= 5 ? 8600 : 55000;
+  await Promise.race([runPool(tasks, concurrency, results), new Promise((r) => setTimeout(r, deadline))]);
   const accounts = results.filter(Boolean);
   return res.status(200).json({
     success: true,
