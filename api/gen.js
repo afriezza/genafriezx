@@ -166,24 +166,36 @@ function makeDevice() {
   };
 }
 
-const REGISTER_MAX = 32;
-let registerSlots = 12;
+const REGISTER_MAX = 24;
+let registerSlots = 8;
 let registerBusy = 0;
 let registerOkStreak = 0;
+let registerNextAt = 0;
 const registerWaiters = [];
 
 async function acquireRegister() {
-  if (registerBusy < registerSlots) registerBusy++;
-  else await new Promise((resolve) => registerWaiters.push(resolve));
+  for (;;) {
+    const wait = registerNextAt - Date.now();
+    if (wait > 0) {
+      await new Promise((resolve) => setTimeout(resolve, wait));
+      continue;
+    }
+    if (registerBusy < registerSlots) {
+      registerBusy++;
+      return;
+    }
+    await new Promise((resolve) => registerWaiters.push(resolve));
+  }
 }
 
 function releaseRegister(status) {
-  if (status === 429 || status >= 500) {
+  if (status === 429) {
     registerOkStreak = 0;
-    registerSlots = Math.max(2, Math.floor(registerSlots / 2));
+    registerSlots = Math.max(4, Math.floor(registerSlots / 2));
+    registerNextAt = Date.now() + 400 + Math.random() * 400;
   } else if (status === 200) {
     registerOkStreak++;
-    if (registerOkStreak >= 8 && registerSlots < REGISTER_MAX) {
+    if (registerOkStreak >= 4 && registerSlots < REGISTER_MAX) {
       registerOkStreak = 0;
       registerSlots++;
     }
@@ -191,9 +203,10 @@ function releaseRegister(status) {
     registerOkStreak = 0;
   }
   registerBusy--;
-  if (registerBusy < registerSlots && registerWaiters.length) {
-    registerBusy++;
+  let free = registerSlots - registerBusy;
+  while (free > 0 && registerWaiters.length) {
     registerWaiters.shift()();
+    free--;
   }
 }
 
