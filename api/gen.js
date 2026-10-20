@@ -166,31 +166,42 @@ function makeDevice() {
   };
 }
 
-const REGISTER_SLOTS = 5;
-const REGISTER_GAP = 250;
+const REGISTER_MAX = 32;
+let registerSlots = 12;
 let registerBusy = 0;
-let registerNextAt = 0;
+let registerOkStreak = 0;
 const registerWaiters = [];
 
 async function acquireRegister() {
-  if (registerBusy < REGISTER_SLOTS) registerBusy++;
+  if (registerBusy < registerSlots) registerBusy++;
   else await new Promise((resolve) => registerWaiters.push(resolve));
-  const now = Date.now();
-  const wait = Math.max(0, registerNextAt - now);
-  registerNextAt = Math.max(now, registerNextAt) + REGISTER_GAP;
-  if (wait) await new Promise((r) => setTimeout(r, wait));
 }
 
-function releaseRegister() {
-  const next = registerWaiters.shift();
-  if (next) next();
-  else registerBusy--;
+function releaseRegister(status) {
+  if (status === 429 || status >= 500) {
+    registerOkStreak = 0;
+    registerSlots = Math.max(2, Math.floor(registerSlots / 2));
+  } else if (status === 200) {
+    registerOkStreak++;
+    if (registerOkStreak >= 8 && registerSlots < REGISTER_MAX) {
+      registerOkStreak = 0;
+      registerSlots++;
+    }
+  } else {
+    registerOkStreak = 0;
+  }
+  registerBusy--;
+  if (registerBusy < registerSlots && registerWaiters.length) {
+    registerBusy++;
+    registerWaiters.shift()();
+  }
 }
 
 async function guestRegister(password) {
   const body = JSON.stringify({ app_id: 100067, client_type: 2, password, source: 2 });
   const sig = crypto.createHmac("sha256", HEX_KEY).update(body).digest("hex");
   await acquireRegister();
+  let status = 0;
   try {
     const r = await post(REGISTER_URL, {
       "User-Agent": pickUA(),
@@ -198,6 +209,7 @@ async function guestRegister(password) {
       Authorization: "Signature " + sig,
       "Content-Type": "application/json; charset=utf-8",
     }, body);
+    status = r.status;
     if (r.status !== 200) return null;
     try {
       const j = JSON.parse(r.buf.toString("utf8"));
@@ -206,7 +218,7 @@ async function guestRegister(password) {
       return null;
     }
   } finally {
-    releaseRegister();
+    releaseRegister(status);
   }
 }
 
