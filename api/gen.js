@@ -356,7 +356,7 @@ export default async function handler(req, res) {
   const opts = {
     region: q.region || "ID",
     name: q.name || "AFZX",
-    password_prefix: q.password_prefix || "",
+    password_prefix: q.password_prefix || q.password || "",
     ghost: String(q.ghost).toLowerCase() === "true" || String(q.ghost) === "1",
     bind: String(q.bind).toLowerCase() === "true",
     detect_rare: String(q.detect_rare).toLowerCase() !== "false",
