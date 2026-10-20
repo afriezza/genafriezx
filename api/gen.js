@@ -228,10 +228,11 @@ async function guestRegister(password) {
       "Content-Type": "application/json; charset=utf-8",
     }, body);
     status = r.status;
+    if (r.status === 429) return { rate: true };
     if (r.status !== 200) return null;
     try {
       const j = JSON.parse(r.buf.toString("utf8"));
-      return j.code === 0 && j.data && j.data.uid ? j.data.uid : null;
+      return j.code === 0 && j.data && j.data.uid ? { uid: j.data.uid } : null;
     } catch {
       return null;
     }
@@ -359,8 +360,10 @@ export async function createOne(opts = {}) {
   for (let i = 0; i < delays.length && !g; i++) {
     if (Date.now() < drainedUntil) break;
     if (delays[i]) await new Promise((r) => setTimeout(r, delays[i] + Math.random() * 300));
-    uid = await guestRegister(password);
-    if (!uid) continue;
+    const reg = await guestRegister(password);
+    if (!reg) continue;
+    if (reg.rate) break;
+    uid = reg.uid;
     g = await tokenGrant(uid, password);
   }
   if (!g) return null;
